@@ -361,12 +361,26 @@ async function micBlockedMessage(spot) {
     ? "اضغط اختَر المتصفح فوق، وبعدين سماح لما كروم يسأل."
     : "الملف مش بيطلّع زرار سماح. اضغط اختَر المتصفح فوق.";
 }
+function iosChrome() {
+  const ua = navigator.userAgent || "";
+  return /iPhone|iPad|iPod/i.test(ua) && /CriOS/i.test(ua);
+}
+function heardFail(err) {
+  const code = err && (err.error || "");
+  if (iosChrome() && (code === "service-not-allowed" || code === "not-allowed" || code === "network" || !code)) {
+    return "الميكروفون مسموح، بس كروم على الآيفون قافل سماع الكلام. من الإعدادات افتح Chrome وشغّل Speech Recognition، وارجع اضغط قول. سفاري شغال من غير الخطوة دي.";
+  }
+  if (code === "not-allowed" || code === "service-not-allowed") {
+    return "من القفل جنب العنوان اختار سماح للميكروفون، وبعدين اضغط قول تاني.";
+  }
+  return "ما سمعتش حاجة. جرّب تاني.";
+}
 function recognizer() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return null;
   const rec = new SR();
   rec.lang = "en-US";
-  rec.continuous = true;
+  rec.continuous = !iosChrome();
   rec.interimResults = true;
   rec.maxAlternatives = 3;
   return rec;
@@ -378,6 +392,13 @@ function listenOnce(onLive, maxMs) {
   return new Promise((resolve, reject) => {
     const rec = recognizer();
     if (!rec) { reject(new Error("nosupport")); return; }
+    let stream = null;
+    const release = () => {
+      if (!stream) return;
+      stream.getTracks().forEach(track => track.stop());
+      stream = null;
+    };
+    const arm = () => {
     recOn = rec;
     const started = Date.now();
     const limit = maxMs || 8000;
@@ -398,6 +419,7 @@ function listenOnce(onLive, maxMs) {
       rec.onerror = null;
       rec._cancel = null;
       try { rec.stop(); } catch (e) {}
+      release();
       const heard = (alts.length ? alts : [latest]).map(s => String(s || "").trim());
       if (err && !heard[0]) reject(err);
       else resolve(heard[0] ? heard : [""]);
@@ -426,8 +448,8 @@ function listenOnce(onLive, maxMs) {
       if (onLive && latest) onLive(latest);
     };
     rec.onerror = (ev) => {
-      if (!ev || ev.error === "no-speech" || ev.error === "aborted") return;
-      if (ev.error === "not-allowed" || ev.error === "service-not-allowed") finish(ev);
+      if (!ev || ev.error === "aborted" || ev.error === "no-speech") return;
+      if (ev.error === "not-allowed" || ev.error === "service-not-allowed" || ev.error === "network") finish(ev);
     };
     rec.onend = () => {
       if (closed || recOn !== rec) return;
@@ -445,7 +467,12 @@ function listenOnce(onLive, maxMs) {
       else if (!tooShort(latest) && quiet >= 900 && elapsed >= 700) finish();
     }, 200);
     hard = setTimeout(() => finish(), limit + 500);
-    try { rec.start(); } catch (e) { finish(e); }
+    const begin = () => { try { rec.start(); } catch (e) { finish(e); } };
+    if (iosChrome() && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(s => { stream = s; begin(); }).catch(() => finish({ error: "not-allowed" }));
+    } else begin();
+    };
+    arm();
   });
 }
 function bestJudge(alts, expected) {
@@ -626,7 +653,7 @@ function untilSaid(expected, node, my) {
         }
       } catch (err) {
         spot.className = "result bad";
-        spot.textContent = (err && err.error === "not-allowed") ? "من القفل جنب العنوان في كروم اختار سماح للميكروفون، وبعدين اضغط قول تاني." : "ما سمعتش حاجة. جرّب تاني في حتة أهدى.";
+        spot.textContent = heardFail(err);
       }
       mic.classList.remove("hot");
     };
@@ -664,7 +691,9 @@ function drawCoach(s, goal, grid) {
   spot.className = "result";
   const note = document.createElement("div");
   note.className = "note";
-  note.textContent = micReady() ? "اضغط قول، واتكلم الكلمة أو الجملة كاملة. اسكت ثانية بعد ما تخلّص عشان يقيّمك." : "تصحيح النطق يظهر له زرار سماح من المتصفح، مش من ملف واتساب.";
+  note.textContent = iosChrome()
+    ? "كروم على الآيفون: الإعدادات ثم Chrome ثم Speech Recognition. سفاري بيصحح النطق من غير الخطوة دي."
+    : (micReady() ? "اضغط قول، واتكلم الكلمة أو الجملة كاملة. اسكت ثانية بعد ما تخلّص عشان يقيّمك." : "تصحيح النطق يظهر له زرار سماح من المتصفح، مش من ملف واتساب.");
   mic.onclick = async () => {
     if (!micReady()) { micBlockedMessage(spot); return; }
     const my = ++token;
@@ -705,7 +734,7 @@ function drawCoach(s, goal, grid) {
       }
     } catch (err) {
       spot.className = "result bad";
-      spot.textContent = (err && err.error === "not-allowed") ? "من القفل جنب العنوان في كروم اختار سماح للميكروفون، وبعدين اضغط قول تاني." : "ما سمعتش حاجة. جرّب تاني.";
+      spot.textContent = heardFail(err);
     }
     mic.classList.remove("hot");
   };
